@@ -1,0 +1,120 @@
+Token
+An LLM never sees characters or words. It sees tokens — integer IDs from a fixed vocabulary (typically 32K–200K entries). A tokenizer splits text into tokens using algorithms like BPE (Byte-Pair Encoding) or SentencePiece.
+"Hello, world!"        → ["Hello", ",", " world", "!"]
+"unbelievable"         → ["un", "believ", "able"]
+"tokenization"         → ["token", "ization"]
+"GPT-4"                → ["GPT", "-", "4"]
+
+
+Why it matters
+Context limits are in tokens, not words or characters.
+
+Pricing (API cost) is per input and output token.
+
+Latency scales with token count (both prompt and generation).
+
+Different models = different tokenizers, so the same text has different token counts. A 128K-token window in one model is not the same amount of text as in another.
+
+Strange failures often trace back to tokenization: models struggle with character-level tasks ("how many r's in strawberry?") because they don't see letters — they see tokens.
+
+
+Tokenization
+Tokenization is the process of converting raw text into tokens — the integer IDs an LLM actually processes.
+
+It's the very first step of every LLM call, and the last step in reverse (detokenization) when output is returned. The model never sees text. It sees numbers.
+
+"Hello, world!"  →  tokenizer  →  [15496, 11, 995, 0]  →  model
+                                    ↓
+                              detokenizer
+                                    ↓
+                              "Hello, world!"
+
+
+
+Why not just use words or characters?
+Both extremes fail:
+
+Approach	                    Problem
+Word-level	                    Vocabulary explodes (millions of words, names, typos, morphology). "run", "runs", "running" are all separate. Any unseen word = <UNK>.
+Character-level	                  Vocabulary tiny, but sequences become very long, and the model must learn that c-a-t means cat. Weak at meaning.
+
+Subword ✅	                   Middle ground: common words stay whole, rare words split into meaningful pieces. Fixed vocabulary (~32K–200K). No <UNK>.
+Modern LLMs all use subword tokenization.
+
+
+
+
+The dominant algorithm: BPE (Byte-Pair Encoding)
+Used by GPT, Llama, Mistral, and most others (via tiktoken or SentencePiece).
+
+How the vocabulary is built (training the tokenizer, done once)
+Start with all individual bytes/characters as the base vocabulary.
+
+Count every adjacent pair of tokens across the corpus.
+
+Merge the most frequent pair into a new token.
+
+Repeat steps 2–3 until you reach the target vocabulary size (e.g. 100,000 merges).
+
+
+
+Context Window
+The context window is the maximum number of tokens an LLM can "see" and attend to in a single forward pass. It is the model's entire working memory for one call. Everything the model knows about your request at generation time must fit inside it.
+
+
+Embedding
+Generation 1 — Count-based / matrix factorization
+
+TF-IDF
+Not a neural embedding, but the baseline everyone should know.
+
+Each document → sparse vector over the vocabulary, weighted by term frequency × inverse document frequency (rare terms get more weight).
+
+Pros: fast, interpretable, strong baseline, no training.
+
+Cons: no semantics ("car" and "automobile" are orthogonal), huge sparse vectors, ignores word order.
+
+LSA / LSI (Latent Semantic Analysis)
+Take the TF-IDF term–document matrix, apply truncated SVD → dense low-rank vectors.
+
+Captures some latent co-occurrence structure; "car" and "automobile" become closer.
+
+Cons: expensive to compute, must recompute on corpus change.
+
+Generation 2 — Static word embeddings
+These produce one fixed vector per word, learned from co-occurrence statistics. No context: "bank" (river) and "bank" (money) get the same vector — the main limitation.
+
+Word2Vec (Mikolov et al., 2013) — what you're training right now
+Two architectures, both shallow neural nets trained on a prediction task:
+
+CBOW (Continuous Bag of Words)
+
+Predict the center word from its surrounding context words.
+
+Fast, good for frequent words, slightly better on small datasets.
+
+Skip-gram
+
+Predict the context words from the center word. This is sg=1 in your gensim code.
+
+Slower but much better for rare words and small corpora — that's why sg=1 is a good default.
+
+Negative sampling (negative=5) or hierarchical softmax makes training tractable by turning it into binary classification: real context pairs vs. random ("negative") pairs.
+
+Training objective (skip-gram with negative sampling), simplified:
+
+text
+maximize  log σ(v_target · v_context)
+        + Σ  log σ(−v_target · v_random)   for k random words
+
+Generation 3 — Contextual transformer embeddings (what you actually use in RAG)
+Static embeddings are mostly historical now. Modern systems embed sentences and documents with transformers, producing context-dependent vectors: "bank" gets different vectors in "river bank" vs "bank account".
+
+The training paradigm: contrastive learning
+Sentence embedding models are trained to make semantically similar pairs close and unrelated pairs far apart:
+
+text
+anchor:   "How do I reset my password?"
+positive: "Steps to change your password"       → pull together
+negative: "What's the weather in Paris?"        → push apart
+Loss: InfoNCE / contrastive loss over in-batch negatives, often with hard negatives mined to make training harder. This is the core trick behind every good retrieval embedding.
